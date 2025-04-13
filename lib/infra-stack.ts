@@ -1,44 +1,71 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { readFileSync } from 'fs';
-// import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 export class InfraStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // The code that defines your stack goes here
-
-    // example resource
-    // const queue = new sqs.Queue(this, 'InfraQueue', {
-    //   visibilityTimeout: cdk.Duration.seconds(300)
-    // });
-    const demoVPC = new ec2.Vpc(this, 'demoVPC', {
-      vpcName:'demoVPC',
-      ipAddresses:ec2.IpAddresses.cidr('10.0.0.0/16'),
-      natGateways:0,
+    // Create VPC with both public and private subnets and NAT Gateway
+    const vpc = new ec2.Vpc(this, 'MyVpc', {
+      natGateways: 1,
+      maxAzs: 2,
+      subnetConfiguration: [
+        {
+          name: 'public-subnet',
+          subnetType: ec2.SubnetType.PUBLIC,
+          cidrMask: 24
+        },
+        {
+          name: 'private-subnet',
+          subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+          cidrMask: 24
+        }
+      ]
     });
-        //Security Group
-    const demoSG = new ec2.SecurityGroup(this,'demoSG',{
-      vpc:demoVPC,
-      securityGroupName:'allow http traffic',
-      allowAllOutbound:true,
+
+    // Create Security Group for EC2
+    const sg = new ec2.SecurityGroup(this, 'EC2SecurityGroup', {
+      vpc,
+      allowAllOutbound: true,
+      description: 'Allow all outbound traffic',
     });
-    demoSG.addIngressRule(ec2.Peer.anyIpv4(),ec2.Port.tcp(80),'allow http traffic')
 
-       //EC2 Instance
-       const demoEC2 = new ec2.Instance(this,'demoEC2',{
-        vpc:demoVPC,
-        vpcSubnets:{subnetType:ec2.SubnetType.PUBLIC},
-        securityGroup:demoSG,
-        instanceType:ec2.InstanceType.of(ec2.InstanceClass.T2,ec2.InstanceSize.MICRO),
-        machineImage: ec2.MachineImage.latestAmazonLinux2023(),
-        keyName:'demo',})
+    // IAM role for EC2 to access SSM
+    const role = new iam.Role(this, 'EC2SSMRole', {
+      assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore')
+      ]
+    });
 
-        const userData=readFileSync('C:/Users/swaroop.kori/ec2/infra/lib/userdata.sh', 'utf8');
-        
+    // Read userdata from local file
+    const userData = readFileSync('C:/Users/swaroop.kori/ec2/infra/lib/userdata.sh', 'utf8');
 
-        demoEC2.addUserData(userData);
+    // Create EC2 instance in private subnet
+    const ec2Instance = new ec2.Instance(this, 'MyPrivateEC2', {
+      vpc,
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MICRO),
+      machineImage: ec2.MachineImage.latestAmazonLinux2023(),
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroup: sg,
+      role: role,
+    });
+
+    ec2Instance.addUserData(userData);
+
+    // Add SSM Association to run a document (optional but included for your request)
+    new ssm.CfnAssociation(this, 'SSMAssociation', {
+      name: 'AWS-RunShellScript',
+      instanceId: ec2Instance.instanceId,
+      parameters: {
+        commands: ['echo "Hello from SSM Association!" > /tmp/ssm-test-output.txt']
+      }
+    });
   }
 }
+
+
